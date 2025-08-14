@@ -33,6 +33,25 @@ model = ChatOpenAI(
     openai_api_key=open_ai_key,
     )
 
+# GMAIL_INITIALIZATION
+# ---------------------
+
+gmail_creds = None
+# token.json stores the user's access and refresh tokens
+if os.path.exists('token.json'):
+    gmail_creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+else:
+    # Run local server for OAuth if no token exists
+    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+    gmail_creds = flow.run_console()
+
+    # Save credentials for future runs
+    with open('token.json', 'w') as token:
+        token.write(gmail_creds.to_json())
+
+# Call Gmail API
+gmail_service = build('gmail', 'v1', credentials=gmail_creds)
+
 # NODES INITIALIZATION
 # ---------------------
 
@@ -43,36 +62,15 @@ class EmailState(TypedDict):
     content: str
     is_spam: bool
     spam_reason: str
-    email_category: str
-
-# --- Helper function to authenticate and get service ---
-def get_gmail_service():
-    creds = None
-    # token.json stores the user's access and refresh tokens
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    else:
-        # Run local server for OAuth if no token exists
-        flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-        creds = flow.run_console()
-
-        # Save credentials for future runs
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-
-    # Call Gmail API
-    service = build('gmail', 'v1', credentials=creds)
-    return service
-     
+    email_category: str     
 
 def read_email(state: EmailState):
     """
-        Reading UNREAD emails from gmail, saves data to EmailState
+        Read UNREAD emails from gmail, saves data to EmailState
     """
-    service = get_gmail_service()
 
     # Fetch unread messages
-    results = service.users().messages().list(userId='me', labelIds=['UNREAD'], maxResults=1).execute()
+    results = gmail_service.users().messages().list(userId='me', labelIds=['UNREAD'], maxResults=1).execute()
     messages = results.get('messages', [])
 
     if not messages:
@@ -82,7 +80,7 @@ def read_email(state: EmailState):
         }
     
     for msg in messages:
-        msg_data = service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
+        msg_data = gmail_service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
         payload = msg_data.get("payload", {})
         headers = payload.get("headers", [])
         
@@ -115,16 +113,24 @@ def read_email(state: EmailState):
 
 def should_process_email(state: EmailState) -> str:
     """Determine the next step based on presence of emails to process"""
-    return "email_presented"
+
+    if state["presented"]:
+        return "email_presented"
+    else:
+        return "no_new_emails"
+
 
 def route_email(state: EmailState) -> str:
     """Determine the next step based on email type"""
+
     if state["is_spam"]:
         return "spam"
     else:
         return "legitimate"
 
 def classify_email(state: EmailState):
+    """Classify email (spam/non-spam) and extract additional metadata."""
+    
     print("classifying email")
     prompt = f"""
 You are an intelligent email assistant. Analyze the following email and determine:

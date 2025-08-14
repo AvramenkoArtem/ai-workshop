@@ -33,6 +33,25 @@ model = ChatOpenAI(
     openai_api_key=open_ai_key,
     )
 
+# GMAIL_INITIALIZATION
+# ---------------------
+
+gmail_creds = None
+# token.json stores the user's access and refresh tokens
+if os.path.exists('token.json'):
+    gmail_creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+else:
+    # Run local server for OAuth if no token exists
+    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+    gmail_creds = flow.run_console()
+
+    # Save credentials for future runs
+    with open('token.json', 'w') as token:
+        token.write(gmail_creds.to_json())
+
+# Call Gmail API
+gmail_service = build('gmail', 'v1', credentials=gmail_creds)
+
 # NODES INITIALIZATION
 # ---------------------
 
@@ -42,34 +61,13 @@ class EmailState(TypedDict):
     sender: str
     content: str
 
-# --- Helper function to authenticate and get service ---
-def get_gmail_service():
-    creds = None
-    # token.json stores the user's access and refresh tokens
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    else:
-        # Run local server for OAuth if no token exists
-        flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-        creds = flow.run_console()
-
-        # Save credentials for future runs
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-
-    # Call Gmail API
-    service = build('gmail', 'v1', credentials=creds)
-    return service
-     
-
 def read_email(state: EmailState):
     """
-        Reading UNREAD emails from gmail, saves data to EmailState
+        Read UNREAD emails from gmail, saves data to EmailState
     """
-    service = get_gmail_service()
 
     # Fetch unread messages
-    results = service.users().messages().list(userId='me', labelIds=['UNREAD'], maxResults=1).execute()
+    results = gmail_service.users().messages().list(userId='me', labelIds=['UNREAD'], maxResults=1).execute()
     messages = results.get('messages', [])
 
     if not messages:
@@ -78,10 +76,8 @@ def read_email(state: EmailState):
             "presented": False,
         }
     
-    print(f"messages {messages}")
-
     for msg in messages:
-        msg_data = service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
+        msg_data = gmail_service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
         payload = msg_data.get("payload", {})
         headers = payload.get("headers", [])
         
@@ -114,10 +110,12 @@ def read_email(state: EmailState):
 
 def should_process_email(state: EmailState) -> str:
     """Determine the next step based on presence of emails to process"""
+
     return "email_presented"
 
 def route_email(state: EmailState) -> str:
     """Determine the next step based on email type"""
+
     return "legitimate"
 
 def classify_email(state: EmailState):

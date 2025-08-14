@@ -1,0 +1,26 @@
+# ---- EXAMPLE 1 ----
+
+type: Work
+
+Subject:
+
+Implement New Feature
+
+Content:
+
+Hello. I'm kindly asking you to provide your estimation when new feature could be implemented.
+
+Best regards, Artem
+
+
+# ---- EXAMPLE 2 ----
+
+type: Spam
+
+Subject:
+
+YOU HAVE WON $5,000,000!!!
+
+Content:
+
+CONGRATULATIONS! You have been selected as the winner of our international lottery! To claim your $5,000,000 prize, please send us your bank details and a processing fee of $100.

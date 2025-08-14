@@ -63,7 +63,7 @@ class EmailState(TypedDict):
      
 def read_email(state: EmailState):
     """
-        Reading UNREAD emails from gmail, saves data to EmailState
+        Read UNREAD emails from gmail, saves data to EmailState
     """
 
     # Fetch unread messages

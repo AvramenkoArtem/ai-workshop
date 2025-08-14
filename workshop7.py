@@ -1,0 +1,323 @@
+import os
+from typing import TypedDict
+from langgraph.graph import StateGraph, START, END
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+import os.path
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+import base64
+
+from email.mime.text import MIMEText
+
+SCOPES = [
+    'https://www.googleapis.com/auth/gmail.send',
+    'https://www.googleapis.com/auth/gmail.modify'
+]
+
+# OPENAI_INITIALIZATION
+# ---------------------
+
+open_ai_key=""
+
+# Fallback to environment variable if not set
+if not open_ai_key:
+    open_ai_key = os.getenv("OPENAI_API_KEY")
+
+# Raise an error if the key is still not found
+if not open_ai_key:
+        raise ValueError("OpenAI API key is not provided and not found in environment variables.")
+
+# Initialize our LLM
+model = ChatOpenAI(
+    temperature=0,
+    openai_api_key=open_ai_key,
+    )
+
+# GMAIL_INITIALIZATION
+# ---------------------
+
+gmail_creds = None
+# token.json stores the user's access and refresh tokens
+if os.path.exists('token.json'):
+    gmail_creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+else:
+    # Run local server for OAuth if no token exists
+    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+    gmail_creds = flow.run_console()
+
+    # Save credentials for future runs
+    with open('token.json', 'w') as token:
+        token.write(gmail_creds.to_json())
+
+# Call Gmail API
+gmail_service = build('gmail', 'v1', credentials=gmail_creds)
+
+# NODES INITIALIZATION
+# ---------------------
+
+class EmailState(TypedDict):
+    presented: bool
+    subject: str
+    sender: str
+    content: str
+    is_spam: bool
+    spam_reason: str
+    email_category: str
+    message_id: str
+
+def read_email(state: EmailState):
+    """
+        Read UNREAD emails from gmail, saves data to EmailState
+    """
+
+    # Fetch unread messages
+    results = gmail_service.users().messages().list(userId='me', labelIds=['UNREAD'], maxResults=1).execute()
+    messages = results.get('messages', [])
+
+    if not messages:
+        print("No new emails found.")
+        return {
+            "presented": False,
+        }
+    
+    for msg in messages:
+        msg_data = gmail_service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
+        payload = msg_data.get("payload", {})
+        headers = payload.get("headers", [])
+        
+        subject = next((h["value"] for h in headers if h["name"] == "Subject"), "(No Subject)")
+        sender = next((h["value"] for h in headers if h["name"] == "From"), "(Unknown Sender)")
+
+        # Try to decode the message body
+        parts = payload.get("parts", [])
+        body = ""
+
+        if parts:
+            for part in parts:
+                if part.get("mimeType") == "text/plain":
+                    data = part.get("body", {}).get("data", "")
+                    body = base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
+                    break
+        else:
+            data = payload.get("body", {}).get("data", "")
+            if data:
+                body = base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
+
+        return {
+            "presented": True,
+            "subject": subject,
+            "sender": sender,
+            "content": body,
+            "message_id": msg['id'],
+        }
+    
+    return {}
+
+def should_process_email(state: EmailState) -> str:
+    """Determine the next step based on presence of emails to process"""
+
+    if state["presented"]:
+        return "email_presented"
+    else:
+        return "no_new_emails"
+
+def route_email(state: EmailState) -> str:
+    """Determine the next step based on email type"""
+
+    if state["is_spam"]:
+        return "spam"
+    else:
+        return "legitimate"
+
+def classify_email(state: EmailState):
+    """Classify email (spam/non-spam) and extract additional metadata."""
+
+    print("classifying email")
+    prompt = f"""
+You are an intelligent email assistant. Analyze the following email and determine:
+1. Whether it is spam or not.
+2. The reason it is spam (if applicable).
+3. The email's category. Choose from: Work, Social, Promotions, Updates, Personal, Other.
+
+Email details:
+Subject: {state['subject']}
+Sender: {state['sender']}
+Content: {state['content']}
+
+Respond in JSON format with the following keys:
+- is_spam: true or false
+- spam_reason: string
+- email_category: string
+    """
+
+    response = model.invoke([
+        HumanMessage(content=prompt)
+    ])
+
+    import json
+    try:
+        result = json.loads(response.content)
+        state["is_spam"] = result.get("is_spam", False)
+        state["spam_reason"] = result.get("spam_reason", "")
+        state["email_category"] = result.get("email_category", "Other")
+    except Exception as e:
+        # Fallbacks in case of parsing error
+        state["is_spam"] = False
+        state["spam_reason"] = "Failed to classify due to model error"
+        state["email_category"] = "Other"
+
+    return state
+
+
+def handle_spam(state: EmailState):
+    """
+    Move an email to spam by modifying its labels.
+    """
+
+    print("handling spam")
+    message_id = state["message_id"]
+
+    gmail_service.users().messages().modify(
+        userId='me',
+        id=message_id,
+        body={
+            "addLabelIds": ["SPAM"],
+            "removeLabelIds": []  # Optional: you can remove INBOX if needed
+        }
+    ).execute()
+    return {}
+
+def handle_response(state: EmailState):
+    """
+    Handle a response on email, by politely answering on it, whenever response makes sense.
+    """
+
+    # Step 1 — Build structured prompt for JSON output
+    prompt = f"""
+    You are a professional email assistant.
+    Write a short, polite, professional reply to this email.
+    Email subject: {state['subject']}
+    Sender: {state['sender']}
+    Content: {state['content']}
+    Category: {state['email_category']}
+
+    Rules:
+    - Reply in JSON format only.
+    - JSON must have one field: "email_response".
+    - "email_response" should be a polite, friendly, professional reply with no more than 5 sentences.
+    - Do not include markdown formatting, code fences, or extra commentary.
+    - Do not include intro and closing, since it's provided in the template.
+
+    Example:
+    {{
+        "email_response": "Thank you for your email. I will review it and get back to you shortly."
+    }}
+    """
+
+    # Step 2 — Invoke model
+    response = model.invoke([
+        HumanMessage(content=prompt)
+    ])
+
+    # Step 3 — Parse JSON
+    import json
+    try:
+        result = json.loads(response.content)
+        email_response = result.get("email_response", "")
+    except json.JSONDecodeError:
+        # Fallback in case model returns invalid JSON
+        print("error occured when parsing model response in response step")
+        return state
+
+    reply_body = f"""
+    Dear {state['sender']},
+
+    {email_response}
+
+    Best regards,
+    Your Automated Assistant
+    """
+
+    # Step 4 — Prepare message
+    message = MIMEText(reply_body)
+    message['To'] = state['sender']
+    message['Subject'] = "Re: " + state['subject']
+    message['In-Reply-To'] = state['message_id']
+    message['References'] = state['message_id']
+
+    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+    # Step 5 — Send reply
+    gmail_service.users().messages().send(
+        userId="me",
+        body={'raw': raw_message}
+    ).execute()
+
+    return state
+
+def mark_as_read(state: EmailState):
+    """
+    Mark handled email as read
+    """
+
+    print("marking as read")
+
+    gmail_service.users().messages().modify(
+        userId='me',
+        id=state['message_id'],
+        body={'removeLabelIds': ['UNREAD']}
+        ).execute()
+    return state
+
+# GRAPH WORKFLOW INITIALIZATION
+# ---------------------
+
+# Create the graph
+email_graph = StateGraph(EmailState)
+
+# Add nodes
+email_graph.add_node("read_email", read_email)
+email_graph.add_node("classify_email", classify_email)
+email_graph.add_node("handle_spam", handle_spam)
+email_graph.add_node("handle_response", handle_response)
+email_graph.add_node("mark_as_read", mark_as_read)
+
+# Start the edges
+email_graph.add_edge(START, "read_email")
+# Add edges - defining the flow
+# Add conditional branching from read_email
+email_graph.add_conditional_edges(
+    "read_email",
+    should_process_email,
+    {
+        "email_presented": "classify_email",
+        "no_new_emails": END
+    }
+)
+
+email_graph.add_edge("read_email", "classify_email")
+
+# Add conditional branching from classify_email
+email_graph.add_conditional_edges(
+    "classify_email",
+    route_email,
+    {
+        "spam": "handle_spam",
+        "legitimate": "handle_response"
+    }
+)
+
+email_graph.add_edge("handle_response", "mark_as_read")
+
+# Add the final edges
+email_graph.add_edge("read_email", END)
+email_graph.add_edge("handle_spam", END)
+email_graph.add_edge("mark_as_read", END)
+
+# Compile the graph
+compiled_graph = email_graph.compile()
+
+compiled_graph.invoke({})
