@@ -14,3 +14,6 @@ COPY . /workspace
 
 # Default command
 CMD ["bash"]
+
+# Docker command
+# docker build -t workshop . && docker run -it --rm -e OPENAI_API_KEY=api-key... -v  "$(pwd)":/workspace workshop
