@@ -62,3 +62,10 @@ compiled_graph.invoke({})
 
 with open("graph.png", "wb") as f:
     f.write(compiled_graph.get_graph().draw_mermaid_png())
+
+# # Get the Mermaid source from your compiled_graph
+# mermaid_code = compiled_graph.get_graph().draw_mermaid()
+
+# # Save it to a .mmd file
+# with open("workshop4.mmd", "w") as f:
+#     f.write(mermaid_code)
