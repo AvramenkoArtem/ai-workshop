@@ -67,5 +67,5 @@ with open("graph.png", "wb") as f:
 # mermaid_code = compiled_graph.get_graph().draw_mermaid()
 
 # # Save it to a .mmd file
-# with open("workshop4.mmd", "w") as f:
+# with open("graph.mmd", "w") as f:
 #     f.write(mermaid_code)
